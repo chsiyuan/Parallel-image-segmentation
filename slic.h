@@ -36,7 +36,7 @@ struct Color
 	double b;
 	_CPU_AND_GPU_CODE_ Color(){}
 	_CPU_AND_GPU_CODE_ Color(double ll, double aa, double bb): l(ll), a(aa), b(bb){}
-	_CPU_AND_GPU_CODE_ Color(CvScalar c){
+	_CPU_AND_GPU_CODE_ Color(CvScalar c){ // construction from data type in opencv
 		l = c.val[0];
 		a = c.val[1];
 		b = c.val[2];
@@ -50,6 +50,7 @@ struct SuperPoint
 	Point point;
 	_CPU_AND_GPU_CODE_ SuperPoint(){}
 	_CPU_AND_GPU_CODE_ SuperPoint(Color c, Point p): color(c), point(p){}
+	// overload operator + and / for convenient computation
 	_CPU_AND_GPU_CODE_ inline SuperPoint operator+=(const SuperPoint& p){
 		this->color.l += p.color.l;
 		this->color.a += p.color.a;
@@ -70,18 +71,18 @@ struct SuperPoint
 
 class gSlic{
 private:
-	Color* img_host;
-	Color* img_dev;
-	int* cluster_host;
-	int* cluster_dev;
-	SuperPoint* centers;
-	int* cluster_count;
-	SuperPoint* color_acc;
+	Color* img_host;		// image in cpu, h*w
+	Color* img_dev;			// image in gpu, h*w
+	int* cluster_host;		// cluster label for every pixel in cpu, h*w
+	int* cluster_dev;		// cluster label for every pixel in gpu, h*w
+	SuperPoint* centers;	// cluster center coordinates, sp_h*sp_w
+	int* cluster_count;		// number of pixels in each class
+	SuperPoint* color_acc;	// sum of coordinates of pixels in each class
 
-	int it_num;
-	int m;
-	int h,w,sp_h,sp_w, b_h, b_w;
-	int sp_size;
+	int it_num;				// iteration number
+	int m;					// parameter used to calculate distance
+	int h, w, sp_h, sp_w, b_h, b_w;	// the image has h*w pixels, sp_h*sp_w superpixels, and b_h*b_w 16*16 blocks
+	int sp_size;			// size of superpixel is sp_size*sp_size
 
 	void init();
 public:
@@ -90,7 +91,7 @@ public:
 	void kmeans();
 	void force_connectivity(vector<vector<int>>& cluster);
 	void get_result();
-	void draw(vector<vector<int>>& cluster);
+	//void draw(vector<vector<int>>& cluster);
 };
 
 __global__ void init_centers(int sp_h, int sp_w, int sp_size, Color* img, SuperPoint* centers);
