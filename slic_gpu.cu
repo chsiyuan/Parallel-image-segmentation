@@ -113,14 +113,15 @@ void gSlic::force_connectivity(vector<vector<int>>& cluster){
 
 	vector<int> dir = {1,0,-1,0,1};
 
-	cluster.resize(h, vector<int>(w, -1));
+	cluster.resize(h, vector<int>(w, -1));  // new cluster labels
 	for(int i = 0; i < h; i++){
 		for(int j = 0; j < w; j++){
-			if(cluster[i][j] == -1){
+			if(cluster[i][j] == -1){  // if this pixel has not been visited yet
 				vector<Point> points;
 				points.push_back(Point(i,j));
 
-				for(int k = 0; k < 4; k++){
+				// record a different label of neighbors for future use
+				for(int k = 0; k < 4; k++){  
 					int ii = i + dir[k];
 					int jj = j + dir[k+1];
 					if(ii>=0 && ii<h && jj>=0 && jj<h && cluster[ii][jj]>=0){
@@ -128,6 +129,7 @@ void gSlic::force_connectivity(vector<vector<int>>& cluster){
 					}
 				}
 
+				// do bfs to find all the connected pixels with the same label
 				int count = 1;
 				for(int c = 0; c < count; c++){
 					for(int k = 0; k < 4; k++){
@@ -142,6 +144,7 @@ void gSlic::force_connectivity(vector<vector<int>>& cluster){
 					}
 				}
 
+				// if this connected component is too small, assign the pixels with the label of neighbor
 				if(count <= thres){
 					for(int c = 0; c < points.size(); c++){
 						cluster[points[c].x][points[c].y] = adjlabel;
