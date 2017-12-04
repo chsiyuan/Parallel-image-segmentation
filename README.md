@@ -6,7 +6,14 @@ These two parts are parallelized separately.
 ### To do
 
 - [x] implementation of slic
-- [ ] compiling (use opencv or not?)
+- [x] compiling (use CMake)
+```
+$ mkdir build
+$ cd build
+$ cmake ../
+$ make
+$ ./main
+```
 - [ ] debug slic
 - [ ] implementation of max-flow-min-cut
 - [ ] debug mfmc
