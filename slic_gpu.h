@@ -8,11 +8,14 @@
 #include<math.h>
 #include<vector>
 #include<string>
+#include<set>
 #include<float.h>
 #include "opencv2/core/core.hpp"
 #include "opencv2/opencv.hpp"
 #include "opencv2/highgui/highgui.hpp"
 #include <cuda.h>
+#include <driver_types.h>
+#include <cuda_runtime.h>
 using namespace std;
 
 #define BLOCK_DIM 16
@@ -22,6 +25,14 @@ using namespace std;
 #else
 #define _CPU_AND_GPU_CODE_ 
 #endif
+
+#define gpuErrchk(ans) {gpuAssert((ans), __FILE__, __LINE__);}
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true){
+	if(code != cudaSuccess){
+		fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+		if(abort) exit(code);
+	}
+}
 
 struct Point{
 	int x;
@@ -69,8 +80,6 @@ struct SuperPoint
 		return *this;
 	}
 };
-
-
 
 
 #endif

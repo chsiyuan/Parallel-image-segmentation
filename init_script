@@ -1,0 +1,14 @@
+#!/bin/bash
+
+module load cuda/7.5
+module load ffmpeg image-libraries
+module load opencv/3.1.0
+CPLUS_INCLUDE_PATH=/sw/coe/centos7/o/opencv/3.1.0/include
+export CPLUS_INCLUDE_PATH
+
+cp slic_gpu.cpp slic_gpu.cu
+
+mkdir build
+cd build
+cmake ../
+make

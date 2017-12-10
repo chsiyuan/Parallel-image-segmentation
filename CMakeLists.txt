@@ -17,7 +17,8 @@ list(APPEND "-std=c++11 -ftree-vectorize")
 
 cuda_add_library(gslic_lib
 						${GSLIC_LIB}
-						OPTIONS -gencode arch=compute_35,code=compute_35
+						OPTIONS 
+						-arch=sm_35
 				)
 target_link_libraries(gslic_lib ${CUDA_LIBRARY})
 

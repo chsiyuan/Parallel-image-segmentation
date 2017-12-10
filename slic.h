@@ -14,17 +14,18 @@ private:
 	SuperPoint* color_acc;	// sum of coordinates of pixels in each class
 
 	int it_num;				// iteration number
-	int m;					// parameter used to calculate distance
+	float m;					// parameter used to calculate distance
 	int h, w, sp_h, sp_w, b_h, b_w;	// the image has h*w pixels, sp_h*sp_w superpixels, and b_h*b_w 16*16 blocks
 	int sp_size;			// size of superpixel is sp_size*sp_size
 
 	void init();
 public:
-	gSlic(Color* image, int height, int width, int it_num, int sp_size, int m);
+	gSlic(Color* image, int height, int width, int it_num, int sp_size, float m);
 	~gSlic();
 	void kmeans();
 	void force_connectivity(vector< vector<int> >& cluster);
 	void get_result();
+	void read_label();
 	//void draw(vector<vector<int>>& cluster);
 };
 

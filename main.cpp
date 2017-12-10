@@ -14,8 +14,9 @@ void draw(vector< vector<int> >& cluster, IplImage* image, int w, int h){
 			}
 		}
 	}
-
-	cvShowImage("Superpixel", image);
+	cout << "=======Save image======" << endl;
+	//cvShowImage("Superpixel", image);
+	cvSaveImage("/home/chsiyuan/587/project/images/seg1.png",image);
 }
 
 /*
@@ -28,25 +29,33 @@ int main(int argc, char* argv[]){
 
 	int it = atoi(argv[2]);
 	int num = atoi(argv[3]);
-	int m = atoi(argv[4]);
-	int h = image->width;
-	int w = image->height;
+	float m = atof(argv[4]);
+	int h = image->height;
+	int w = image->width;
 	int sp_size = (int) sqrt(h * w / (double) num);
+	cout << "======Input=======" << endl;
+	cout << "Read image: " << argv[1] << " with size: " << h << "x" << w << endl;
+	cout << "Max iteration: " << it << endl;
+	cout << "Number of superpixels: "<< num << endl;
+	cout << "Size of superpixels: " << sp_size << endl;
+	cout << "Weight: " << m << endl;
+
 	Color* img = (Color*) malloc(h * w * sizeof(Color));
 	for (int i = 0; i < h; ++i)
 	{
 		for (int j = 0; j < w; ++j)
 		{
-			img[i * w + j] = Color(cvGet2D(image, i, j));
+			img[i * w + j] = Color(cvGet2D(image_lab, i, j));
 		}
 	}
 
 	gSlic* slic = new gSlic(img, h, w, it, sp_size, m);
 	slic->kmeans();
 	slic->get_result();
-	vector< vector<int> > cluster;
-	slic->force_connectivity(cluster);
-	draw(cluster, image, w, h);
+	//vector< vector<int> > cluster;
+	//slic->force_connectivity(cluster);
+	slic->read_label();
+	//draw(cluster, image, w, h);
 
 	return 0;
 }
