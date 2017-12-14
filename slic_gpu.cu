@@ -6,7 +6,7 @@
 
 // global functions, called from host
 __global__ void init_centers(int h, int w, int sp_h, int sp_w, int sp_size, Color* img, SuperPoint* centers);
-__global__ void assign_label(int h, int w, int sp_h, int sp_w, int sp_size, int m, Color* img, int* cluster, SuperPoint* centers);
+__global__ void assign_label(int h, int w, int sp_h, int sp_w, int sp_size, float weight, float norm_xy_dist, float norm_color_dist, Color* img, int* cluster, SuperPoint* centers);
 __global__ void clustering(int h, int w, int sp_h, int sp_w, int b_h, int b_w, int b_size,
 						 Color* img, int* cluster, int* cluster_count, SuperPoint* color_acc);
 __global__ void reduce_count(int numClusters, int numBlocksLast, int* cluster_count);
@@ -15,20 +15,22 @@ __global__ void updtate_center(int numClusters, SuperPoint* centers, int* cluste
 
 // device functions called from kernels
 __device__ inline SuperPoint find_center(Color *img, int w, Point center);
-__device__ inline double compute_dist(SuperPoint p1, SuperPoint p2, int S, int m);
+__device__ inline float compute_dist(SuperPoint p1, SuperPoint p2, float m, float norm_xy_dist, float norm_color_dist);
+__global__ void test(int h, int w);
 
 //===============================
 //           CPU CODE
 //===============================
 
-gSlic::gSlic(Color* image, int height, int width, int it_num, int sp_size, int m){
+gSlic::gSlic(Color* image, int height, int width, int it_num, int sp_size, float weight){
 	this->it_num = it_num;
 	this->sp_size = sp_size;
-	this->m = m;
+	this->weight = weight;
 	this->h = height;
 	this->w = width;
 	this->img_host = image;
-	init();
+	this->norm_xy_dist = (1.0 / (1.4242 * sp_size)) * (1.0 / (1.4242 * sp_size));
+	this->norm_color_dist = (15.0 / (1.7321 * 128)) * (15.0 / (1.7321 * 128));
 }
 
 gSlic::~gSlic(){
@@ -46,26 +48,32 @@ gSlic::~gSlic(){
  *
  */
 void gSlic::init(){
+	cout << "========Initialization=======" << endl;
 
-	cudaMalloc(&img_dev, h * w * sizeof(Color));
-	cudaMemcpy(img_dev, img_host, h * w * sizeof(Color), cudaMemcpyHostToDevice);
-	cudaMalloc(&cluster_dev, h * w * sizeof(int));
+	cluster_host = (int*) malloc(h * w * sizeof(int));
+	gpuErrchk( cudaMalloc(&cluster_dev, h * w * sizeof(int)) );
+	gpuErrchk( cudaMemset(cluster_dev, 0, h * w * sizeof(int)) );
+	gpuErrchk( cudaMalloc(&img_dev, h * w * sizeof(Color)) );
+	gpuErrchk( cudaMemcpy(img_dev, img_host, h * w * sizeof(Color), cudaMemcpyHostToDevice) );
 
 	sp_h = (h + sp_size - 1) / sp_size;
 	sp_w = (w + sp_size - 1) / sp_size;
 	b_h = (h + BLOCK_DIM - 1) / BLOCK_DIM;
 	b_w = (w + BLOCK_DIM - 1) / BLOCK_DIM;
 
-	cudaMalloc(&centers, sp_h * sp_w * sizeof(SuperPoint));
-	cudaMalloc(&cluster_count, b_h * b_w * sp_h * sp_w * sizeof(int));
-	cudaMemset(cluster_count, 0, b_h * b_w * sp_h * sp_w * sizeof(int));
-	cudaMalloc(&color_acc, b_h * b_w * sp_h * sp_w * sizeof(SuperPoint));
-	cudaMemset(color_acc, 0, b_h * b_w * sp_h * sp_w * sizeof(SuperPoint));
+	gpuErrchk(cudaMalloc(&centers, sp_h * sp_w * sizeof(SuperPoint)));
+	gpuErrchk(cudaMalloc(&cluster_count, b_h * b_w * sp_h * sp_w * sizeof(int)));
+	gpuErrchk(cudaMemset(cluster_count, 0, b_h * b_w * sp_h * sp_w * sizeof(int)));
+	gpuErrchk(cudaMalloc(&color_acc, b_h * b_w * sp_h * sp_w * sizeof(SuperPoint)));
+	gpuErrchk(cudaMemset(color_acc, 0, b_h * b_w * sp_h * sp_w * sizeof(SuperPoint)));
 
 	int numThreads = BLOCK_DIM * BLOCK_DIM;
 	int numBlocks = (sp_w * sp_h + numThreads - 1) / numThreads; 
+
 	// initialize cluster centers
 	init_centers<<<numBlocks , numThreads>>>(h, w, sp_h, sp_w, sp_size, img_dev, centers);
+	gpuErrchk( cudaPeekAtLastError() );
+	gpuErrchk( cudaDeviceSynchronize() );
 }
 
 // Calculate the smallest power of to larger than n
@@ -83,7 +91,7 @@ inline int helper(int n){
  * Generate superpixels
  */
 void gSlic::kmeans(){
-
+	cout << "========Kmeans=======" << endl;
 	// for assign_label()
 	int numThreads = BLOCK_DIM * BLOCK_DIM;
 	int numBlocksPerCluster = (sp_size*sp_size + numThreads - 1) / numThreads;
@@ -101,36 +109,45 @@ void gSlic::kmeans(){
 		// divide each (square) cluster block into blocks because all
 		// the pixels in the same cluster block share the same 9 nearest
 		// neighbors
-		assign_label<<<numBlocks, numThreads>>>(h, w, sp_h, sp_w, sp_size, m, img_dev, cluster_dev, centers);
-		cudaDeviceSynchronize();
+		//cout << "---> Assign labels" << endl;
+		assign_label<<<numBlocks, numThreads>>>(h, w, sp_h, sp_w, sp_size, weight, norm_xy_dist, norm_color_dist, img_dev, cluster_dev, centers);
+		gpuErrchk( cudaPeekAtLastError() );
+		gpuErrchk( cudaDeviceSynchronize() );
+
+		
 
 		// Sum up pixels belonging to the same cluster within one block
 		//
 		// divide img into 16*16 blocks
 		// within each block, one thread responsible for counting one cluster
 		// those threads share the image block locally
-		clustering<<<numBlocks2 , numThreads>>>(h, w, sp_h, sp_w, b_h, b_w, numThreads, img_dev, cluster_dev, cluster_count, color_acc);
-		cudaDeviceSynchronize();
+		//cout << "---> clustering" << endl;
+		clustering<<<numBlocks2 , numThreads>>>(h, w, sp_h, sp_w, b_h, b_w, BLOCK_DIM, img_dev, cluster_dev, cluster_count, color_acc);
+		gpuErrchk( cudaPeekAtLastError() );
+		gpuErrchk( cudaDeviceSynchronize() );
 
 		// Reduce and update center
 		// Sum up the count of one cluster over all blocks
 		//
 		// one parent thread responsible for summing up one column of cluster_count and color_acc
 		// it calls child blocks and threads repeatedly
-
+		//cout << "---> Reduction" << endl;
 		int numBlocksLast = b_h*b_w;
 		do{
  			// if there is less than 16*16 elements to reduce, then we don't need to create that many threads
  			int numThreadsPerBlock = min(BLOCK_DIM * BLOCK_DIM , helper(numBlocksLast));
  			int numBlocksCurr = (numBlocksLast + numThreadsPerBlock - 1) / numThreadsPerBlock;
  			dim3 numBlocks3(numBlocksCurr , sp_w * sp_h);
-			reduce_count<<<numBlocks , numThreadsPerBlock>>>(sp_h * sp_w, numBlocksLast, cluster_count);
- 			reduce_color<<<numBlocks , numThreadsPerBlock>>>(sp_h * sp_w, numBlocksLast, color_acc);
- 			cudaDeviceSynchronize();
+			reduce_count<<<numBlocks3 , numThreadsPerBlock, numThreadsPerBlock * sizeof(int)>>>(sp_h * sp_w, numBlocksLast, cluster_count);
+ 			reduce_color<<<numBlocks3 , numThreadsPerBlock, numThreadsPerBlock * sizeof(SuperPoint)>>>(sp_h * sp_w, numBlocksLast, color_acc);
+ 			gpuErrchk( cudaPeekAtLastError() );
+			gpuErrchk( cudaDeviceSynchronize() );
  			numBlocksLast = numBlocksCurr;
  		}while(numBlocksLast > 1);
-
+ 		//cout << "---> Update center" << endl;
 		updtate_center<<<numBlocksClusters , numThreads>>>(sp_h * sp_w, centers, cluster_count, color_acc);
+		gpuErrchk( cudaPeekAtLastError() );
+		gpuErrchk( cudaDeviceSynchronize() );
 	}
 
 }
@@ -138,24 +155,61 @@ void gSlic::kmeans(){
 /*
  * Copy clustering result to CPU
  */
-void gSlic::get_result(){
-	cluster_host = (int*) malloc(h * w * sizeof(int));
-	cudaMemcpy(cluster_host, cluster_dev, h * w * sizeof(int), cudaMemcpyDeviceToHost);
+void gSlic::copy_result(){
+	cout << "========Read result=======" << endl;
+	gpuErrchk( cudaMemcpy(cluster_host, cluster_dev, h * w * sizeof(int), cudaMemcpyDeviceToHost) );
+}
+
+void gSlic::read_label(){
+	cout << "Clusters:..." << endl;
+	set<int> cid;
+	for(int i=0; i<h; i++){
+		for(int j=0; j<w; j++){
+			int id = cluster_host[i*w+j];
+			if(cid.find(id)==cid.end()){
+				cid.insert(id);
+				cout << id << " ";
+			}
+		}
+	}
+}
+
+Color* gSlic::draw_boundary(){
+	cout << "h: " << h << " w: "<< w << endl;
+ 	int dir[] = {1,0,-1,0,1};
+	for(int i = 0; i < h-1; i++){
+		for(int j = 0; j < w-1; j++){
+			for(int k = 0; k < 4; k++){
+				int ii = i + dir[k];
+				int jj = j + dir[k+1];
+				if(cluster_host[i*w+j] != cluster_host[ii*w+jj]){
+					Color color(255,0,0);
+					color.toLab();
+					img_host[i*w+j] = color;
+					break;
+				}
+			}
+		}
+	}
+	return img_host;
 }
 
 /*
  * Force the superpixels to be connected components
  */
-void gSlic::force_connectivity(vector< vector<int> >& cluster){
+void gSlic::force_connectivity(){
+	cout << "========Enforce connectivity=======" << endl;
 	int label = 0, adjlabel = 0;
 	int thres = h * w / (sp_h * sp_w) / 4;
 
 	int dir[] = {1,0,-1,0,1};
 
-	cluster.resize(h, vector<int>(w, -1));  // new cluster labels
+	int* cluster_new = (int *) malloc(h * w * sizeof(int));  // new cluster labels
+	memset(cluster_new, -1, h * w * sizeof(int));
+
 	for(int i = 0; i < h; i++){
 		for(int j = 0; j < w; j++){
-			if(cluster[i][j] == -1){  // if this pixel has not been visited yet
+			if(cluster_new[i * w + j] == -1){  // if this pixel has not been visited yet
 				vector<Point> points;
 				points.push_back(Point(i,j));
 
@@ -163,8 +217,8 @@ void gSlic::force_connectivity(vector< vector<int> >& cluster){
 				for(int k = 0; k < 4; k++){  
 					int ii = i + dir[k];
 					int jj = j + dir[k+1];
-					if(ii>=0 && ii<h && jj>=0 && jj<h && cluster[ii][jj]>=0){
-						adjlabel = cluster[ii][jj];
+					if(ii>=0 && ii<h && jj>=0 && jj<h && cluster_new[ii * w + jj]>=0){
+						adjlabel = cluster_new[ii * w + jj];
 					}
 				}
 
@@ -175,9 +229,9 @@ void gSlic::force_connectivity(vector< vector<int> >& cluster){
 						int ii = points[c].x + dir[k];
 						int jj = points[c].y + dir[k+1];
 						if(ii>=0 && ii<h && jj>=0 && jj<w &&
-						 cluster[ii][jj]==-1 && cluster_host[ii*w+jj]==cluster_host[i*w+j]){
+						 cluster_new[ii * w + jj]==-1 && cluster_host[ii * w + jj] == cluster_host[i * w + j]){
 							points.push_back(Point(ii,jj));
-							cluster[ii][jj] = label;
+							cluster_new[ii * w + jj] = label;
 							count++;
 						}
 					}
@@ -185,8 +239,8 @@ void gSlic::force_connectivity(vector< vector<int> >& cluster){
 
 				// if this connected component is too small, assign the pixels with the label of neighbor
 				if(count <= thres){
-					for(int c = 0; c < points.size(); c++){
-						cluster[points[c].x][points[c].y] = adjlabel;
+					for(int c = 0; c < count; c++){
+						cluster_new[int(points[c].x * w + points[c].y)] = adjlabel;
 					}
 					label--;
 				}
@@ -194,31 +248,37 @@ void gSlic::force_connectivity(vector< vector<int> >& cluster){
 			}
 		}
 	}
+
+	memcpy(cluster_host, cluster_new, h * w * sizeof(int));
+	free(cluster_new);
 }
 
 
 //===============================
 //    GPU CODE IMPLEMENTATION
 //===============================
+__global__ void test(int h, int w){
+	printf("GPU: h = %d, w = %d", h , w);
+}
+
 /*
  * Initialize centers of clusters. Called by init().
  */
 __global__ void init_centers(int h, int w, int sp_h, int sp_w, int sp_size, Color* img, SuperPoint* centers){
 
-	int idx_x = threadIdx.x / sp_w;
-	int idx_y = threadIdx.y % sp_w;
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	int idx_x = idx / sp_w;
+	int idx_y = idx % sp_w;
 	if(idx_x<sp_h && idx_y<sp_w){
 		// initial center
-		Point center(idx_x*sp_size+sp_size/2 , idx_y*sp_size+sp_size/2);
-
-		// the superpixel block on the right or bottom of the image may not have a full size (sp_size*sp_size)
-		// assign neighbors's center to it if its center is out of the image.
-		if(center.x >= h){
-			centers[threadIdx.x] = centers[threadIdx.x-sp_w];
-		}else if(center.y >= w){
-			centers[threadIdx.x] = centers[threadIdx.x-1];
+		int height = min(h,(idx_x+1)*sp_size) - idx_x*sp_size;
+		int width = min(w,(idx_y+1)*sp_size) - idx_y*sp_size;
+		Point center(idx_x*sp_size+ height/2 , idx_y*sp_size+width/2);
+		if(height >= sp_size/2 && width >= sp_size/2){
+			SuperPoint p = find_center(img, w, center);
+			centers[idx] = p;
 		}else{
-			centers[threadIdx.x] = find_center(img, w, center);
+			centers[idx] = SuperPoint(img[int(center.x*w+center.y)],center);
 		}
 	}
 }
@@ -226,10 +286,7 @@ __global__ void init_centers(int h, int w, int sp_h, int sp_w, int sp_size, Colo
 // Find the pixel with smallest gradient in the 8 adjacent neighbors.
 // gradient is respect to gray-scale value
 __device__ inline SuperPoint find_center(Color *img, int w, Point center){
-	double min_grad = FLT_MAX;
-	Point loc_min;
-	Color col_min;
-
+	
 	// load 4*4 area around the initial center to local
 	Color img_local[4*4];
 	for (int i = 0; i < 4; i++)
@@ -241,6 +298,10 @@ __device__ inline SuperPoint find_center(Color *img, int w, Point center){
 			img_local[i*4+j] = img[ii*w+jj];
 		}
 	}
+
+	double min_grad = FLT_MAX;
+	Point loc_min = center;
+	Color col_min = img_local[1*4+1];
     
     // find the pixel with smallest gradient
     for (int i=0; i<3; i++) {
@@ -264,7 +325,8 @@ __device__ inline SuperPoint find_center(Color *img, int w, Point center){
 /*
  * Assign labels to every pixel
  */
-__global__ void assign_label(int h, int w, int sp_h, int sp_w, int sp_size, int m, Color* img, int* cluster, SuperPoint* centers){
+__global__ void assign_label(int h, int w, int sp_h, int sp_w, int sp_size, float weight, float norm_xy_dist, float norm_color_dist, Color* img, int* cluster, SuperPoint* centers){
+
 	__shared__ SuperPoint neighbors[9];
 
 	//----Indices initialization----
@@ -273,11 +335,11 @@ __global__ void assign_label(int h, int w, int sp_h, int sp_w, int sp_size, int 
 	int x_start = blockIdx_x * sp_size;	// start x,y position in the image
 	int y_start = blockIdx_y * sp_size; 
 	int x_end, y_end;
-	if(blockIdx_x == sp_h-1) x_end = h-1;
-	else x_end = (blockIdx_x+1) * sp_size - 1;
+	if(blockIdx_x == sp_h-1) x_end = h;
+	else x_end = (blockIdx_x+1) * sp_size;
 
-	if(blockIdx_y == sp_w-1) y_end = w-1;
-	else x_end = (blockIdx_y+1) * sp_size - 1;
+	if(blockIdx_y == sp_w-1) y_end = w;
+	else y_end = (blockIdx_y+1) * sp_size;
 
 	int width = y_end - y_start; 		// actual w and h of block
 	int height = x_end - x_start;
@@ -301,10 +363,10 @@ __global__ void assign_label(int h, int w, int sp_h, int sp_w, int sp_size, int 
 	// Assign label to every pixel
 	if(idx_local_x < height && idx_local_y < width){
 		Point v = Point(x_start + idx_local_x, y_start + idx_local_y);
-		Color color = img[v.x * w + v.y];
+		Color color = img[int(v.x * w + v.y)];
 		SuperPoint p = SuperPoint(color, v);
 
-		double min_dist = FLT_MAX;
+		float min_dist = FLT_MAX;
 		int label = blockIdx.x;
 		for (int i = -1; i <= 1; i++)
 		{
@@ -313,7 +375,7 @@ __global__ void assign_label(int h, int w, int sp_h, int sp_w, int sp_size, int 
 				int idx_n_x = blockIdx_x + i;  // 2D block id of neighbors
 				int idx_n_y = blockIdx_y + j;
 				if(idx_n_x>=0 && idx_n_x<sp_h && idx_n_y>=0 && idx_n_y<sp_w){
-					double dist = compute_dist(p, neighbors[(i+1)*3+j+1], sp_size, m);
+					float dist = compute_dist(p, neighbors[(i+1)*3+j+1], weight, norm_xy_dist, norm_color_dist);
 					if(dist < min_dist){
 						min_dist = dist;
 						label = idx_n_x * sp_w + idx_n_y;
@@ -323,20 +385,20 @@ __global__ void assign_label(int h, int w, int sp_h, int sp_w, int sp_size, int 
 			
 		}
 		
-		cluster[v.x * w + v.y] = label;
+		cluster[int(v.x * w + v.y)] = label;
 	}
 	
 }
 
 // Distance between two superpoints is defined as |(l1,a1,b1)-(l2,a2,b2)|| + m/S ||(x1,y1)-(x2,y2)||
 // m and S are parameters, see paper
-__device__ inline double compute_dist(SuperPoint p1, SuperPoint p2, int S, int m){
-	double d_lab = sqrtf( (p1.color.l-p2.color.l) * (p1.color.l-p2.color.l)
+__device__ inline float compute_dist(SuperPoint p1, SuperPoint p2, float weight, float norm_xy_dist, float norm_color_dist){
+	float d_lab = (p1.color.l-p2.color.l) * (p1.color.l-p2.color.l)
 					   	+ (p1.color.a-p2.color.a) * (p1.color.a-p2.color.a)
-						+ (p1.color.b-p2.color.b) * (p1.color.b-p2.color.b));
-	double d_xy = sqrtf(  (p1.point.x-p2.point.x) * (p1.point.x-p2.point.x)
-						+ (p1.point.y-p2.point.y) * (p1.point.y-p2.point.y));
-	return d_lab + m/S*d_xy;
+						+ (p1.color.b-p2.color.b) * (p1.color.b-p2.color.b);
+	float d_xy = (p1.point.x-p2.point.x) * (p1.point.x-p2.point.x)
+						+ (p1.point.y-p2.point.y) * (p1.point.y-p2.point.y);
+	return sqrtf( d_lab * norm_color_dist + weight * d_xy * norm_xy_dist );
 }
 
 
@@ -352,30 +414,37 @@ __global__ void clustering(int h, int w, int sp_h, int sp_w, int b_h, int b_w, i
 
 	//----Indices initialization----
 	int blockIdx_x = blockIdx.x / b_w;
-	int blockIdx_y = blockIdx.x / b_w;
+	int blockIdx_y = blockIdx.x % b_w;
 	int x_start = blockIdx_x * b_size;
 	int y_start = blockIdx_y * b_size;
 	int x_end, y_end;
-	if(blockIdx_x == b_h-1) x_end = h-1;
-	else x_end = (blockIdx_x + 1) * b_size - 1;
+	if(blockIdx_x == b_h-1) x_end = h;
+	else x_end = (blockIdx_x + 1) * b_size;
 
-	if(blockIdx_y == b_h-1) y_end = h-1;
-	else y_end = (blockIdx_y + 1) * b_size - 1;
+	if(blockIdx_y == b_w-1) y_end = w;
+	else y_end = (blockIdx_y + 1) * b_size;
 
 	int height = x_end - x_start;
 	int width = y_end - y_start;
-	
-	int idx_local_x = threadIdx.x / b_size;
-	int idx_local_y = threadIdx.x % b_size;
-	int idx_global = (x_start+idx_local_x) * w + idx_local_y;
-	int idx_cluster = blockIdx.y * blockDim.x + threadIdx.x; // one thread is responsible for one cluster
+
+	int idx_cluster = blockIdx.y * blockDim.x + threadIdx.x; // one thread is responsible for one cluster	
+	int idx_local_x = threadIdx.x / width;
+	int idx_local_y = threadIdx.x % width;
+	int idx_global = (x_start+idx_local_x) * w + y_start + idx_local_y;
 	//------------------------------
+
+	// if(blockIdx.x == 5 && blockIdx.y == 0 && threadIdx.x == 100){
+	// 	printf("blockIdx(%d,%d)  xy_start(%d,%d)  hw(%d,%d)  idx_cluster:%d  idx_local(%d,%d), idx_global:%d\n", 
+	// 		blockIdx_x, blockIdx_y, x_start, y_start, height, width, idx_cluster, idx_local_x, idx_local_y, idx_global);
+	// }
 
 	// Load img block to local
 	// Since b_size is set to be 16*16, each thread can load one pixel value
 	if(idx_local_x < height && idx_local_y < width){
 		img_local[threadIdx.x] = img[idx_global];
 		cluster_local[threadIdx.x] = cluster[idx_global];
+		//if(blockIdx.x == 5 && blockIdx.y == 0)
+		//	printf("thread %d loads cluster label %d from cluster[%d]\n", threadIdx.x, cluster_local[threadIdx.x], idx_global);
 	}
 	
 	__syncthreads();
@@ -384,20 +453,22 @@ __global__ void clustering(int h, int w, int sp_h, int sp_w, int b_h, int b_w, i
 	if(idx_cluster < sp_h*sp_w){
 		int count = 0;
 		SuperPoint p(Color(0,0,0),Point(0,0));
-		for(int i = 0; i < b_size; i++){
-			for(int j = 0; j < b_size; j++){
-				if(i < height && j < width){
-					int idx = i * b_size + j;
-					if(cluster_local[idx] == idx_cluster){
-						count++;
-						p += SuperPoint(img_local[idx],Point(x_start+i,y_start+j));
-					}
+		for(int i = 0; i < height; i++){
+			for(int j = 0; j < width; j++){
+				int idx = i * width + j;
+				if(cluster_local[idx] == idx_cluster){
+					count++;
+					p += SuperPoint(img_local[idx],Point(x_start+i,y_start+j));
 				}
 			}
 		}
 
 		// cluster_count is block_num * cluster_num = (b_h*b_w) * (sp_h*sp_w)
 		cluster_count[blockIdx.x * sp_h * sp_w + idx_cluster] = count;
+		color_acc[blockIdx.x * sp_h * sp_w + idx_cluster] = p;
+		// if(idx_cluster == 0 && count>0){
+		// 	printf("Cluster 0 count: %d\n", count);
+		// }
 	}
 }
 
@@ -409,8 +480,15 @@ __global__ void updtate_center(int numClusters, SuperPoint* centers, int* cluste
 	int idx_cluster = blockIdx.x * blockDim.x + threadIdx.x;
 
 	if(idx_cluster < numClusters){
+		SuperPoint tmp = color_acc[idx_cluster];
+		int count = cluster_count[idx_cluster];
+		SuperPoint p = tmp / count;
+		// if(idx_cluster < 30){
+		// 	printf("color_acc: (%.2f,%.2f,%.2f,%d,%d), cluster_count: %d\n", tmp.color.l, tmp.color.a, tmp.color.b, int(tmp.point.x), int(tmp.point.y), count);
+		// 	printf("%d: (%d, %d)\n", idx_cluster, int(p.point.x), int(p.point.y));
+		// }
 		// update cluster center
-		centers[idx_cluster] = color_acc[idx_cluster] / cluster_count[idx_cluster];
+		centers[idx_cluster] = p;
 	}
 }
 
@@ -418,7 +496,7 @@ __global__ void updtate_center(int numClusters, SuperPoint* centers, int* cluste
 // calculate the sum in one block (for count reduction)
 __global__ void reduce_count(int numClusters, int numBlocksLast, int* cluster_count){
 
-	__shared__ int cluster_count_local[BLOCK_DIM * BLOCK_DIM];
+	extern __shared__ int cluster_count_local[];
 
 	int idx_cluster = blockIdx.y;
 	int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -436,13 +514,16 @@ __global__ void reduce_count(int numClusters, int numBlocksLast, int* cluster_co
 	}
 
 	// save the reduction result to cluster_count[block id, cluster id]
-	if(threadIdx.x==0) cluster_count[blockIdx.x * numClusters + idx_cluster] = cluster_count_local[0];
+	if(threadIdx.x==0){ 
+		cluster_count[blockIdx.x * numClusters + idx_cluster] = cluster_count_local[0];
+		//if(idx_cluster == 0) printf("block %d writes sum to cluster_count[%d] with %d\n", blockIdx.x, blockIdx.x * numClusters + idx_cluster, cluster_count_local[0]);
+	}
 }
 
 // calculate the sum in one block (for coordinates reduction)
 __global__ void reduce_color(int numClusters, int numBlocksLast, SuperPoint* color_acc){
 
-	__shared__ SuperPoint color_acc_local[BLOCK_DIM * BLOCK_DIM];
+	extern __shared__ SuperPoint color_acc_local[];
 
 	int idx_cluster = blockIdx.y;
 	int idx = blockIdx.x * blockDim.x + threadIdx.x;

@@ -5,18 +5,18 @@
 
 #include<stdio.h>
 #include<iostream>
+#include<fstream>
 #include<math.h>
 #include<vector>
 #include<string>
 #include<set>
 #include<float.h>
-#include "opencv2/core/core.hpp"
-#include "opencv2/opencv.hpp"
-#include "opencv2/highgui/highgui.hpp"
 #include <cuda.h>
 #include <driver_types.h>
 #include <cuda_runtime.h>
+#include <chrono>
 using namespace std;
+using namespace std::chrono;
 
 #define BLOCK_DIM 16
 
@@ -35,25 +35,24 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 }
 
 struct Point{
-	int x;
-	int y;
+	float x;
+	float y;
 	_CPU_AND_GPU_CODE_ Point(){}
-	_CPU_AND_GPU_CODE_ Point(int xx, int yy): x(xx), y(yy){} 
+	_CPU_AND_GPU_CODE_ Point(float xx, float yy): x(xx), y(yy){} 
 };
 
 struct Color
 {
-	double l;
-	double a;
-	double b;
+	float l;
+	float a;
+	float b;
 	_CPU_AND_GPU_CODE_ Color(){}
-	_CPU_AND_GPU_CODE_ Color(double ll, double aa, double bb): l(ll), a(aa), b(bb){}
-	_CPU_AND_GPU_CODE_ Color(CvScalar c){ // construction from data type in opencv
-		l = c.val[0];
-		a = c.val[1];
-		b = c.val[2];
-	}
+	_CPU_AND_GPU_CODE_ Color(float ll, float aa, float bb): l(ll), a(aa), b(bb){}
+	void toLab();
+	void toRgb();
 };
+
+
 
 struct SuperPoint
 {
