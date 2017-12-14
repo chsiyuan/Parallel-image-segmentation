@@ -6,15 +6,8 @@ These two parts are parallelized separately.
 ### To do
 
 - [x] implementation of slic
-- [x] compiling (use CMake)
-```
-$ mkdir build
-$ cd build
-$ cmake ../
-$ make
-$ ./main
-```
-- [ ] debug slic
+- [x] compiling (just use nvcc)
+- [x] debug slic
 - [ ] implementation of max-flow-min-cut
 - [ ] debug mfmc
 - [ ] test result
